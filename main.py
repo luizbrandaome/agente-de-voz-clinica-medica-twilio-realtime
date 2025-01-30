@@ -11,18 +11,61 @@ from dotenv import load_dotenv
 import httpx  # Nova biblioteca para requisições HTTP
 import ssl
 from httpx import AsyncClient
+from datetime import datetime
+import pytz  # Biblioteca para fusos horários
 
 load_dotenv()
+
+# Tradução manual dos meses
+MESES_EM_PORTUGUES = {
+    1: "janeiro",
+    2: "fevereiro",
+    3: "março",
+    4: "abril",
+    5: "maio",
+    6: "junho",
+    7: "julho",
+    8: "agosto",
+    9: "setembro",
+    10: "outubro",
+    11: "novembro",
+    12: "dezembro"
+}
+
+
+# Função para obter a data formatada no fuso horário GMT-3
+def obter_data_formatada():
+    tz = pytz.timezone("America/Sao_Paulo")
+    agora = datetime.now(tz)
+    dia = agora.day
+    mes = MESES_EM_PORTUGUES[agora.month]
+    ano = agora.year
+    return f"{dia} de {mes} de {ano}"  # Exemplo: "19 de janeiro de 2025"
+
 
 # Configuration
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 PORT = int(os.getenv('PORT', 5050))
-SYSTEM_MESSAGE = (
-    "You are a helpful and bubbly AI assistant who loves to chat about "
-    "anything the user is interested in and is prepared to offer them facts. "
-    "You have a penchant for dad jokes, owl jokes, and rickrolling – subtly. "
-    "Always stay positive, but work in a joke when appropriate.")
-VOICE = 'alloy'
+
+# Define a variável base para o SYSTEM_MESSAGE
+system_message_base = (
+    f"Você é uma assistente telefônica da clínica Modelo. Nessa clínica atendem os profissionais listados no XML abaixo. Hoje é dia {obter_data_formatada()}, e você deve receber ligações de pessoas com intenção de marcar consulta com um dos profissionais, ou ambos... você pode fornecer duas datas disponíveis por vez e perguntar se alguma delas é de interesse do usuário, se não for, pode oferecer alguma outra data, como podem ter vários dias com vários horários cada, você pode começar perguntando se prefere pela manhã ou pela tarde, e baseado nisso, sugerir horários livres que estão na lista abaixo."
+    "A clínica modelo fica situada na Avenida Dom Pedro II n 750, em São Lourenço, Minas Gerais."
+    "Pergunte o nome completo do cliente caso ele queira marcar uma consulta;"
+    "Pergunte também se o numero de telefone para contato é o mesmo que ele usou para ligar."
+    "Caso na mesma ligação o cliente queira marcar uma outra consulta para outra pessoa, lembre de perguntar o nome da outra pessoa também."
+    "Confirme se a consulta será por algum plano de saúde, ou se será particular, ou se será retorno."
+    "<rules> Ao sugerir datas, se a data for no mesmo mês atual, pode responder somente com o Dia sem mencionar o mês. fale dia e mês somente quando for para mês diferente do atual."
+    "Faça somente uma pergunta por vez."
+    "Seu idioma é PT-BR"
+    "Após o usuário informar o nome completo, você pode chamá-lo posteriormente somente pelo primeiro nome."
+    "Caso o numero de telefone não seja o mesmo que o cliente usou para ligar, pergunte se o numero de telefone. </rules>"
+)
+
+# SYSTEM_MESSAGE será atualizado dinamicamente antes de ser usado
+SYSTEM_MESSAGE = system_message_base  # Inicializa como a base
+
+VOICE = 'coral'
 LOG_EVENT_TYPES = [
     'error', 'response.content.done', 'rate_limits.updated', 'response.done',
     'input_audio_buffer.committed', 'input_audio_buffer.speech_stopped',
@@ -63,21 +106,20 @@ async def index_page():
 @app.api_route("/incoming-call", methods=["GET", "POST"])
 async def handle_incoming_call(request: Request):
     """Handle incoming call and return TwiML response to connect to Media Stream."""
-    global SYSTEM_MESSAGE  # Permite modificação da variável global
-
     # URL da qual o texto será buscado
     text_url = "https://srv658237.hstgr.cloud/clinica.php"  # Substitua pelo URL real
 
-    # Recupera o texto da URL e atualiza SYSTEM_MESSAGE
+    # Recupera o texto da URL e atualiza SYSTEM_MESSAGE dinamicamente
     fetched_text = await fetch_text_from_url(text_url)
+    global SYSTEM_MESSAGE
+    SYSTEM_MESSAGE = system_message_base  # Sempre parte da base
     if fetched_text:
         SYSTEM_MESSAGE += f"\n{fetched_text}"
-        print(f"SYSTEM_MESSAGE atualizado: {SYSTEM_MESSAGE}")
+        print(f"SYSTEM_MESSAGE atualizado dinamicamente: {SYSTEM_MESSAGE}")
 
     response = VoiceResponse()
-    # <Say> punctuation to improve text-to-speech flow
     response.say(
-        "Oi! eu sou a assistente da clínica dom pedro! Como eu posso te ajudar?",
+        "Clínica modelo, posso ajudar?",
         voice=
         "alice",  # Use a voz "alice" que suporta múltiplos idiomas, incluindo português
         language="pt-BR"  # Configura o idioma para Português do Brasil
@@ -96,7 +138,7 @@ async def handle_media_stream(websocket: WebSocket):
     await websocket.accept()
 
     async with websockets.connect(
-            'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-10-01',
+            'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview',
             extra_headers={
                 "Authorization": f"Bearer {OPENAI_API_KEY}",
                 "OpenAI-Beta": "realtime=v1"
@@ -249,7 +291,7 @@ async def send_initial_conversation_item(openai_ws):
                 "type":
                 "input_text",
                 "text":
-                "Greet the user with 'Hello there! I am an AI voice assistant powered by Twilio and the OpenAI Realtime API. You can ask me for facts, jokes, or anything you can imagine. How can I help you?'"
+                "Comece dizendo 'Clínica modelo, posso ajudar?'"
             }]
         }
     }
@@ -264,9 +306,9 @@ async def initialize_session(openai_ws):
         "session": {
             "turn_detection": {
                 "type": "server_vad",
-                "threshold": 0.5,
-                "prefix_padding_ms": 250,
-                "silence_duration_ms": 500
+                "threshold": 0.4,
+                "prefix_padding_ms": 500,
+                "silence_duration_ms": 300
             },
             "input_audio_format": "g711_ulaw",
             "output_audio_format": "g711_ulaw",
